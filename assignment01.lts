@@ -1,97 +1,172 @@
-// Assignment 01 - lift
+/*
+   DESCRIZIONE GENERALE DEL MODELLO
+   Il sistema è composto da quattro processi che si sincronizzano sulle azioni condivise:
+     USERS  : i due utenti (a e b), ciascuno con il proprio ciclo di vita
+              (chiama -> aspetta -> entra -> sceglie il piano -> esce)
+     QUEUE  : la coda FIFO delle chiamate (politica first-come-first-served)
+     LIFT   : l'ascensore, che serve UN utente alla volta e gestisce l'allarme
+     ALARM  : il sistema antincendio (alarm / solved )
+*/
 
-// N floors (0 = ground floor), 2 users: a and b
+
+//Parametri
+
+//il piano 0 è il piano terra.
 const N = 3
 range Floors = 0..N-1
 
-/* Un utente chiama l'ascensore al piano f e aspetta che arrivi,
-   poi entra, sceglie un piano d ed esce a quel piano.
-   Se suona l'allarme: la chiamata viene annullata (cancel)
-   oppure, se e' dentro, l'utente viene evacuato (evacuate). */
-USER       = (call[f:Floors] -> WAITING[f]),
-WAITING[f:Floors] = (arrive[f] -> AT_DOOR | cancel -> USER),
-AT_DOOR    = (enter -> INSIDE | cancel -> USER),
-INSIDE     = (select[d:Floors] -> RIDING[d] | evacuate -> USER),
-RIDING[d:Floors]  = (exit[d] -> USER | evacuate -> USER).
 
+/*
+   UTENTE
+     call[f]    : preme il pulsante di chiamata al piano f
+     arrive[f]  : l'ascensore è arrivato al piano f
+     enter      : l'utente entra in cabina
+     select[d]  : preme il pulsante del piano di destinazione d
+     exit[d]    : esce al piano d
+     cancel     : (solo per allarme) la chiamata/attesa viene annullata
+     evacuate   : (solo per allarme) l'utente viene fatto uscire
+*/
+
+USER = (call[f:Floors] -> WAITING[f]),
+
+// Ha chiamato al piano f: aspetta l'arrivo, oppure la chiamata viene annullata per allarme.
+WAITING[f:Floors] = (arrive[f] -> AT_DOOR | cancel -> USER),
+
+// L'ascensore è arrivato e la porta è aperta: l'utente può entrare, oppure (allarme) l'attesa viene annullata.
+AT_DOOR = (enter -> INSIDE | cancel -> USER),
+
+// E' in cabina: sceglie il piano d, oppure (allarme) viene evacuato.
+INSIDE = (select[d:Floors] -> RIDING[d] | evacuate -> USER),
+
+// Sta viaggiando verso d: esce a d, oppure (allarme) viene evacuato.
+RIDING[d:Floors] = (exit[d] -> USER | evacuate -> USER).
+
+// Due istanze indipendenti dello stesso utente, distinte dal prefisso.
 ||USERS = (a:USER || b:USER).
 
-/* coda FIFO */
+
+/*
+   CODA FIFO DELLE CHIAMATE
+   
+   Registra l'ordine delle chiamate: l'ascensore puo' servire (serve) solo l'utente che ha chiamato per primo.
+   Nota: un utente gia' in coda non puo' chiamare di nuovo (e' comunque bloccato in WAITING), quindi non servono altre transizioni.
+*/
+
 QUEUE = EMPTY,
 EMPTY = (a.call[Floors] -> QA | b.call[Floors] -> QB),
 QA    = (a.serve -> EMPTY | b.call[Floors] -> QAB),
 QB    = (b.serve -> EMPTY | a.call[Floors] -> QBA),
-//caso in cui viene chiamato prima da A e poi da B
+// a è stato chiamato per primo: si può servire solo a, poi resta b
 QAB   = (a.serve -> QB),
-//viceversa
+// b è stato chiamato per primo: si può servire solo b, poi resta a
 QBA   = (b.serve -> QA).
+
+
+/* 
+   ALLARME ANTINCENDIO
+  
+   L'allarme scatta (alarm) e rimane attivo finchè un segnale esterno ne comunica la risoluzione (solved); poi può scattare di nuovo.
+*/
 
 ALARM = (alarm -> solved -> ALARM).
 
-/* L'ascensore serve un utente alla volta e torna in IDLE quando l'utente esce.
-   Se parte l'allarme, l'utente viene fatto scendere e l'ascensore
-   aspetta che l'allarme sia risolto. Gli spostamenti tra i piani sono
-   astratti: arrive[f] = l'ascensore e' arrivato al piano f. */
+
+/* 
+   ASCENSORE
+   
+   Serve un utente alla volta: da IDLE prende il primo della coda
+   (serve) e torna in IDLE solo quando l'utente esce.
+*/
+
 LIFT = IDLE,
-IDLE = (a.serve -> A_GO | b.serve -> B_GO | alarm -> STOPPED),
 
-A_GO   = (a.arrive[f:Floors] -> A_DOOR | alarm -> a.cancel -> STOPPED),
-A_DOOR = (a.enter -> A_IN | alarm -> a.cancel -> STOPPED),
-A_IN   = (a.select[d:Floors] -> A_RIDE[d] | alarm -> a.evacuate -> STOPPED),
-A_RIDE[d:Floors] = (a.exit[d] -> IDLE | alarm -> a.evacuate -> STOPPED),
+IDLE = (a.serve -> A_GO
+       | b.serve -> B_GO
+       | alarm -> GROUND),
 
-B_GO   = (b.arrive[f:Floors] -> B_DOOR | alarm -> b.cancel -> STOPPED),
-B_DOOR = (b.enter -> B_IN | alarm -> b.cancel -> STOPPED),
-B_IN   = (b.select[d:Floors] -> B_RIDE[d] | alarm -> b.evacuate -> STOPPED),
-B_RIDE[d:Floors] = (b.exit[d] -> IDLE | alarm -> b.evacuate -> STOPPED),
+//servizio all'utente a
 
+// L'ascensore raggiunge il piano f dove a ha chiamato.
+A_GO   = (a.arrive[f:Floors] -> A_DOOR
+         | alarm -> a.cancel -> GROUND),
+// Porta aperta: a può entrare.
+A_DOOR = (a.enter -> A_IN
+         | alarm -> a.cancel -> GROUND),
+// a è in cabina e sceglie il piano.
+A_IN   = (a.select[d:Floors] -> A_RIDE[d]
+         | alarm -> go_ground -> open_door -> a.evacuate -> STOPPED),
+// a viaggia verso d; all'uscita l'ascensore torna libero.
+A_RIDE[d:Floors] = (a.exit[d] -> IDLE
+         | alarm -> go_ground -> open_door -> a.evacuate -> STOPPED),
+
+//servizio all'utente b (simmetrico ad a)
+B_GO   = (b.arrive[f:Floors] -> B_DOOR
+         | alarm -> b.cancel -> GROUND),
+B_DOOR = (b.enter -> B_IN
+         | alarm -> b.cancel -> GROUND),
+B_IN   = (b.select[d:Floors] -> B_RIDE[d]
+         | alarm -> go_ground -> open_door -> b.evacuate -> STOPPED),
+B_RIDE[d:Floors] = (b.exit[d] -> IDLE
+         | alarm -> go_ground -> open_door -> b.evacuate -> STOPPED),
+
+//gestione dell'allarme
+// Nessun utente da evacuare: scende al piano terra e apre la porta.
+GROUND  = (go_ground -> open_door -> STOPPED),
+// Fermo con la porta aperta fino alla risoluzione dell'allarme.
 STOPPED = (solved -> IDLE).
+
+//SISTEMA COMPLETO
 
 ||LIFT_SYSTEM = (USERS || QUEUE || LIFT || ALARM).
 
 
-/* ---------------- fluenti ---------------- */
 
-// l'allarme e' attivo da quando scatta a quando viene risolto
+//FLUENTI
+
+//L'allarme è attivo da quando scatta a quando viene risolto.
 fluent ALARM_ON = <alarm, solved>
 
-// l'utente e' nell'ascensore da quando entra a quando esce (o viene evacuato)
+//L'utente è in cabina da quando entra a quando esce (o viene evacuato).
 fluent A_IN_LIFT = <a.enter, {a.exit[Floors], a.evacuate}>
 fluent B_IN_LIFT = <b.enter, {b.exit[Floors], b.evacuate}>
 
-// l'utente ha chiamato l'ascensore e questo non e' ancora arrivato (o la chiamata e' stata annullata)
+//L'utente ha chiamato e l'ascensore non è ancora arrivato (la chiamata può anche essere annullata per allarme).
 fluent A_CALLED = <a.call[Floors], {a.arrive[Floors], a.cancel}>
 fluent B_CALLED = <b.call[Floors], {b.arrive[Floors], b.cancel}>
 
-// l'utente ha scelto un piano e non e' ancora uscito (o evacuato)
+//L'utente ha scelto un piano e non è ancora uscito (o evacuato).
 fluent A_SELECTED = <a.select[Floors], {a.exit[Floors], a.evacuate}>
 fluent B_SELECTED = <b.select[Floors], {b.exit[Floors], b.evacuate}>
 
-// l'utente aspetta di entrare nell'ascensore
+//L'utente ha chiamato e non è ancora entrato in cabina (oppure l'attesa è stata annullata per allarme).
 fluent A_WAITING = <a.call[Floors], {a.enter, a.cancel}>
 fluent B_WAITING = <b.call[Floors], {b.enter, b.cancel}>
 
+//PROPRIETA'
 
-/* ---------------- proprieta' ---------------- */
+//Un solo utente alla volta usa l'ascensore.
 
-/* 1) solo un utente alla volta puo' utilizzare l'ascensore */
+//Versione FLTL: non possono mai essere in cabina entrambi.
 assert MUTEX = []!(A_IN_LIFT && B_IN_LIFT)
 
-// la stessa cosa come property (si controlla con Check > Safety)
-property ONE_AT_A_TIME = (a.enter -> A_IN | b.enter -> B_IN),
-A_IN = (a.exit[Floors] -> ONE_AT_A_TIME | a.evacuate -> ONE_AT_A_TIME),
-B_IN = (b.exit[Floors] -> ONE_AT_A_TIME | b.evacuate -> ONE_AT_A_TIME).
+//Stessa proprietà come "property" di safety: dopo un enter non può avvenire un altro enter finchè l'utente non esce o viene evacuato.
+//Si verifica con Check > Safety sul composito CHECK_ONE_AT_A_TIME.
+property ONE_AT_A_TIME = (a.enter -> A_INSIDE | b.enter -> B_INSIDE),
+A_INSIDE = (a.exit[Floors] -> ONE_AT_A_TIME | a.evacuate -> ONE_AT_A_TIME),
+B_INSIDE = (b.exit[Floors] -> ONE_AT_A_TIME | b.evacuate -> ONE_AT_A_TIME).
 
 ||CHECK_ONE_AT_A_TIME = (LIFT_SYSTEM || ONE_AT_A_TIME).
 
-/* 2) se qualcuno chiama l'ascensore, prima o poi arriva (tranne con allarme) */
+//Se un utente chiama l'ascensore, prima o poi arriva (tranne in caso di allarme).
+
 assert A_LIFT_ARRIVES = [](A_CALLED -> <>(!A_CALLED || ALARM_ON))
 assert B_LIFT_ARRIVES = [](B_CALLED -> <>(!B_CALLED || ALARM_ON))
 
-/* 3) se un utente dentro seleziona un piano, prima o poi ci arriva (tranne con allarme) */
+//Se un utente in cabina seleziona un piano, prima o poi ci arriva (tranne in caso di allarme).
 assert A_SELECT_ARRIVES = [](A_SELECTED -> <>(!A_SELECTED || ALARM_ON))
 assert B_SELECT_ARRIVES = [](B_SELECTED -> <>(!B_SELECTED || ALARM_ON))
 
-/* 4) un utente che aspetta l'ascensore prima o poi lo ottiene (tranne con allarme) */
-assert A_GETS_LIFT = [](A_WAITING -> <>(a.enter || ALARM_ON))
-assert B_GETS_LIFT = [](B_WAITING -> <>(b.enter || ALARM_ON))
+//Un utente in attesa al piano prima o poi ottiene l'ascensore (tranne in caso di allarme).
+
+assert A_GETS_LIFT = [](A_WAITING -> <>(!A_WAITING || ALARM_ON))
+assert B_GETS_LIFT = [](B_WAITING -> <>(!B_WAITING || ALARM_ON))
