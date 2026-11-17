@@ -1,3 +1,4 @@
+/*Autori: Federica Guiducci - Sohail Mama*/
 /*
    DESCRIZIONE GENERALE DEL MODELLO
    Il sistema è composto da quattro processi che si sincronizzano sulle azioni condivise:
